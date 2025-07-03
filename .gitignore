@@ -1,0 +1,49 @@
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 分发/打包
+dist/
+build/
+*.egg-info/
+
+# 单元测试/覆盖率报告
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE相关
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 本地配置
+.env
+.env.local
+
+
+# 其他大文件
+*.h5
+*.pkl
+*.model
+bertopic_multilingual_model/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 语料库
+corpus/
