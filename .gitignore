@@ -39,7 +39,7 @@ htmlcov/
 *.h5
 *.pkl
 *.model
-bertopic_multilingual_model/
+bertopic_multilingual_model
 
 # 系统文件
 .DS_Store
