@@ -2,8 +2,11 @@ import pandas as pd
 from bertopic import BERTopic
 from sklearn.feature_extraction.text import CountVectorizer
 from sentence_transformers import SentenceTransformer
+import numpy as np
 import matplotlib.pyplot as plt
-
+from umap import UMAP
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # 读取停用词
 def load_stopwords(file_path):
@@ -24,7 +27,7 @@ df = pd.read_json("../corpus/新闻数据/新闻数据.jsonl", lines=True)
 # df = pd.read_csv("../corpus/拉非兹败选话题分析/oversea.csv")
 
 # 只处理前500条数据
-max_docs = 1000
+max_docs = 500
 df = df.head(max_docs)
 print(f"仅处理前 {max_docs} 条数据")
 
@@ -84,3 +87,99 @@ for word, score in topic_model.get_topic(1):
 
 # ====== 10. 保存模型 ======
 topic_model.save("bertopic_multilingual_model")
+
+# ====== 11. 生成聚类可视化 ======
+print("\n生成聚类可视化...")
+
+# 获取文档嵌入
+embeddings = topic_model._extract_embeddings(docs)
+print(f"嵌入向量形状: {embeddings.shape}")
+
+# 使用 UMAP 降维到二维空间用于可视化
+umap_model = UMAP(n_components=2, random_state=42, n_neighbors=15, min_dist=0.1)
+umap_embeddings = umap_model.fit_transform(embeddings)
+print("UMAP 降维完成")
+
+# 可视化聚类结果
+fig = make_subplots(rows=1, cols=1)
+
+# 过滤掉噪声主题 (-1)
+valid_indices = [i for i, topic in enumerate(topics) if topic != -1]
+valid_topics = [topics[i] for i in valid_indices]
+valid_embeddings = umap_embeddings[valid_indices]
+
+# 获取有效的主题列表和颜色映射
+unique_topics = sorted(set(valid_topics))
+colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_topics)))
+topic_colors = {t: f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' for t, c in zip(unique_topics, colors)}
+
+# 为每个主题添加一个散点图层
+for topic in unique_topics:
+    indices = [i for i, t in enumerate(valid_topics) if t == topic]
+    cluster_points = valid_embeddings[indices]
+
+    # 获取该主题的代表性关键词
+    if topic in topic_model.get_topics():
+        keywords = [word for word, _ in topic_model.get_topic(topic)[:3]]
+        topic_name = f"主题 {topic}: {', '.join(keywords)}"
+    else:
+        topic_name = f"主题 {topic}"
+
+    fig.add_trace(
+        go.Scatter(
+            x=cluster_points[:, 0],
+            y=cluster_points[:, 1],
+            mode='markers',
+            marker=dict(color=topic_colors[topic], size=8),
+            name=topic_name,
+            hovertemplate="<b>" + topic_name + "</b><br>%{text}",
+            text=[docs[valid_indices[i]][:50] + "..." for i in indices]  # 显示文本前50个字符
+        )
+    )
+
+# 添加主题中心点
+topic_info = topic_model.get_topic_info()
+topic_info = topic_info[topic_info["Topic"] != -1]  # 过滤掉噪声主题
+
+# 计算每个主题的中心点
+topic_centers = {}
+for topic in unique_topics:
+    indices = [i for i, t in enumerate(valid_topics) if t == topic]
+    if indices:
+        center = np.mean(valid_embeddings[indices], axis=0)
+        topic_centers[topic] = center
+
+# 添加中心点
+center_x = [topic_centers[t][0] for t in topic_centers]
+center_y = [topic_centers[t][1] for t in topic_centers]
+center_text = [f"主题 {t} 中心" for t in topic_centers]
+
+fig.add_trace(
+    go.Scatter(
+        x=center_x,
+        y=center_y,
+        mode='markers+text',
+        marker=dict(color='black', symbol='star', size=15, line=dict(width=2, color='white')),
+        text=[f"主题 {t}" for t in topic_centers.keys()],
+        name="主题中心",
+        textposition="top center",
+        hoverinfo="text",
+        hovertext=center_text
+    )
+)
+
+# 设置布局
+fig.update_layout(
+    title="文本聚类可视化（UMAP降维）",
+    xaxis_title="UMAP 维度 1",
+    yaxis_title="UMAP 维度 2",
+    legend_title="主题分类",
+    width=1200,
+    height=800,
+    hovermode="closest"
+)
+
+# 显示并保存图表
+fig.show()
+fig.write_html("cluster_visualization.html")
+print("聚类可视化已保存为 cluster_visualization.html")
