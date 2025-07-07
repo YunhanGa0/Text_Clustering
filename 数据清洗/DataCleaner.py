@@ -14,6 +14,9 @@ def clean_text(text):
     # 移除URL
     text = re.sub(r'https?://\S+', '', text)
 
+    # 移除标签 (#开头的词)
+    text = re.sub(r'#\w+', '', text)
+
     # 移除表情符号
     text = emoji.replace_emoji(text, '')
 

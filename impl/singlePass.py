@@ -1,211 +1,396 @@
+import codecs
 import os
-import re
 import json
-import math
-import numpy as np
-from gensim import corpora, models, similarities, matutils
-from smart_open import smart_open
 import pandas as pd
-from pyltp import SentenceSplitter
-from textrank4zh import TextRank4Keyword, TextRank4Sentence
-# from tkinter import _flatten
-from pyltp import Segmentor, Postagger
-from ltp import LTP
-ltp = LTP()
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
 
-def flatten(nested_list):
-    """扁平化嵌套列表"""
-    result = []
-    for item in nested_list:
-        if isinstance(item, list):
-            result.extend(flatten(item))
-        else:
-            result.append(item)
-    return result
 
-def get_avg_feature_vector(sentence, model, num_features):
-    """
-    计算句子的平均词向量
-
-    参数:
-        sentence: 分词后的句子（词语列表）
-        model: 词向量模型
-        num_features: 词向量维度
-
-    返回:
-        句子的平均词向量表示
-    """
-    words = [word for word in sentence if word in model.wv]
-    feature_vec = np.zeros((num_features,), dtype="float32")
-
-    if len(words) > 0:
-        feature_vec = np.mean([model.wv[word] for word in words], axis=0)
-
-    return feature_vec
-
+# 读取停用词函数
 def load_stopwords(file_path):
-    with open(file_path, 'r', encoding='utf-8') as f:
-        return set(line.strip() for line in f)
-# 合并所有语言的停用词
-stopwords = set()
-stopwords.update(load_stopwords('../stopwords/Arabic.txt'))
-stopwords.update(load_stopwords('../stopwords/Indonesian.txt'))
-stopwords.update(load_stopwords('../stopwords/Malay.txt'))
-stopwords.update(load_stopwords('../stopwords/English.txt'))
-stopwords.update(load_stopwords('../stopwords/Chinese.txt'))
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return set(line.strip() for line in f)
+    except FileNotFoundError:
+        print(f"警告：未找到停用词文件 '{file_path}'")
+        return set()
 
-class Single_Pass_Cluster(object):
-    def __init__(self,
-                 filename,
-                 stop_words_file=list(stopwords),
-                 theta=0.5,
-                 LTP_DATA_DIR='./ltp_models/',  # ltp模型目录的路径
-                 segmentor=Segmentor(),
-                 postagger=Postagger(),
-                 word2vec_model=None  # 添加词向量模型参数
-                 ):
 
-        self.filename = filename
-        self.stop_words_file = stop_words_file
-        self.theta = theta
-        self.LTP_DATA_DIR = LTP_DATA_DIR
-        self.cws_model_path = os.path.join(self.LTP_DATA_DIR, 'cws.model')
-        self.pos_model_path = os.path.join(self.LTP_DATA_DIR, 'pos.model')
-        self.segmentor = segmentor
-        self.segmentor.load_with_lexicon(self.cws_model_path, self.LTP_DATA_DIR + 'dictionary.txt')
-        self.postagger = postagger
-        self.postagger.load(self.pos_model_path)
-        self.model = word2vec_model  # 存储词向量模型
+class SinglePassClustering:
+    def __init__(self, threshold=0.5):
+        self.threshold = threshold
+        self.clusters = []  # 每个簇保存的是向量的平均表示
+        self.cluster_contents = []  # 保存每个簇的原始文本索引
 
-    def loadData(self, filename):
-        Data = []
-        i = 0
-        with smart_open(self.filename, encoding='utf-8') as f:
-            texts = [list(SentenceSplitter.split(i.strip().strip('\ufeff'))) for i in f.readlines()]
-            print('未切割前的语句总数有{}条...'.format(len(texts)))
-            print("............................................................................................")
-            texts = [i.strip() for i in list(flatten(texts)) if len(i) > 5]
-            print('切割后的语句总数有{}条...'.format(len(texts)))
-            for line in texts:
-                i += 1
-                Data.append(line)
-        return Data
+    def fit(self, vectors):
+        is_sparse = hasattr(vectors, "toarray")
 
-    def word_segment(self, sentence):
-        # 如果self.stop_words_file是文件路径，则读取文件
-        if isinstance(self.stop_words_file, str):
-            stopwords = [line.strip() for line in open(self.stop_words_file, encoding='utf-8').readlines()]
-        # 如果已经是停用词列表，则直接使用
-        else:
-            stopwords = self.stop_words_file
-
-        post_list = ['n', 'nh', 'ni', 'nl', 'ns', 'nz', 'j', 'ws', 'a', 'z', 'b']
-        sentence = sentence.strip().replace('。', '').replace('」', '').replace('//', '').replace('_', '').replace('-',
-                                                                                                                 '').replace(
-            '\r', '').replace('\n', '').replace('\t', '').replace('@', '').replace(r'\\', '').replace("''", '')
-        words = self.segmentor.segment(sentence.replace('\n', ''))  # 分词
-        postags = self.postagger.postag(words)  # 词性标注
-        dict_data = dict(zip(words, postags))
-        table = {k: v for k, v in dict_data.items() if v in post_list}
-        words = list(table.keys())
-        word_segmentation = []
-        for word in words:
-            if word == ' ':
-                continue
-            if word not in stopwords:
-                word_segmentation.append(word)
-        return word_segmentation
-
-    def get_Tfidf_vector_representation(self, word_segmentation, pivot=10, slope=0.1):
-        # 得到文本数据的空间向量表示
-        dictionary = corpora.Dictionary(word_segmentation)
-        corpus = [dictionary.doc2bow(text) for text in word_segmentation]
-        tfidf = models.TfidfModel(corpus, pivot=pivot, slope=slope)
-        corpus_tfidf = tfidf[corpus]
-        return corpus_tfidf
-
-    def get_Doc2vec_vector_representation(self, word_segmentation):
-        # 得到文本数据的空间向量表示
-        if self.model is None:
-            raise ValueError("词向量模型未提供，无法生成Doc2Vec表示")
-
-        corpus_doc2vec = [get_avg_feature_vector(i, self.model, num_features=50) for i in word_segmentation]
-        return corpus_doc2vec
-
-    def getMaxSimilarity(self, dictTopic, vector):
-        maxValue = 0
-        maxIndex = -1
-        for k, cluster in dictTopic.items():
-            oneSimilarity = np.mean([matutils.cossim(vector, v) for v in cluster])
-            # oneSimilarity = np.mean([cosine_similarity(vector, v) for v in cluster])
-            if oneSimilarity > maxValue:
-                maxValue = oneSimilarity
-                maxIndex = k
-        return maxIndex, maxValue
-
-    def single_pass(self, corpus, texts, theta):
-        dictTopic = {}
-        clusterTopic = {}
-        numTopic = 0
-        cnt = 0
-        for vector, text in zip(corpus, texts):
-            if numTopic == 0:
-                dictTopic[numTopic] = []
-                dictTopic[numTopic].append(vector)
-                clusterTopic[numTopic] = []
-                clusterTopic[numTopic].append(text)
-                numTopic += 1
+        for idx, vec in enumerate(vectors):
+            if is_sparse:
+                vec = vec.toarray().reshape(1, -1)  # 将稀疏矩阵转为密集矩阵
             else:
-                maxIndex, maxValue = self.getMaxSimilarity(dictTopic, vector)
-                # 将给定语句分配到现有的、最相似的主题中
-                if maxValue >= theta:
-                    dictTopic[maxIndex].append(vector)
-                    clusterTopic[maxIndex].append(text)
+                vec = vec.reshape(1, -1)
 
-                # 或者创建一个新的主题
+            if not self.clusters:
+                self.clusters.append(vec)
+                self.cluster_contents.append([idx])
+                continue
+
+            similarities = [cosine_similarity(vec, c_vec)[0][0] for c_vec in self.clusters]
+            max_sim = max(similarities)
+            max_index = similarities.index(max_sim)
+
+            if max_sim >= self.threshold:
+                # 加入最近簇，并更新中心
+                self.cluster_contents[max_index].append(idx)
+
+                # 获取该簇中所有向量
+                cluster_indices = self.cluster_contents[max_index]
+                if is_sparse:
+                    # 对稀疏矩阵，先提取簇中的向量，再转为密集矩阵
+                    old_vecs = vectors[cluster_indices].toarray()
                 else:
-                    dictTopic[numTopic] = []
-                    dictTopic[numTopic].append(vector)
-                    clusterTopic[numTopic] = []
-                    clusterTopic[numTopic].append(text)
-                    numTopic += 1
-            cnt += 1
-            if cnt % 500 == 0:
-                print("processing {}...".format(cnt))
-        return dictTopic, clusterTopic
+                    old_vecs = vectors[cluster_indices]
 
-    def fit_transform(self, theta=0.5):
-        datMat = self.loadData(self.filename)
-        word_segmentation = []
-        for i in range(len(datMat)):
-            word_segmentation.append(self.word_segment(datMat[i]))
-        print("............................................................................................")
-        print('文本已经分词完毕 !')
+                # 计算新的簇中心
+                self.clusters[max_index] = np.mean(old_vecs, axis=0).reshape(1, -1)
+            else:
+                self.clusters.append(vec)
+                self.cluster_contents.append([idx])
 
-        # 得到文本数据的空间向量表示
-        corpus_tfidf = self.get_Tfidf_vector_representation(word_segmentation)
-        # corpus_tfidf =  self.get_Doc2vec_vector_representation(word_segmentation)
-        dictTopic, clusterTopic = self.single_pass(corpus_tfidf, datMat, theta)
-        print("............................................................................................")
-        print("得到的主题数量有: {} 个 ...".format(len(dictTopic)))
-        print("............................................................................................\n")
-        # 按聚类语句数量对主题进行排序，找到重要的聚类群
-        clusterTopic_list = sorted(clusterTopic.items(), key=lambda x: len(x[1]), reverse=True)
-        for k in clusterTopic_list[:30]:
-            cluster_title = '\n'.join(k[1])
-            # print(''.join(cluster_title))
-            # 得到每个聚类中的的主题关键词
-            word = TextRank4Keyword()
-            word.analyze(''.join(self.word_segment(''.join(cluster_title))), window=5, lower=True)
-            w_list = word.get_keywords(num=10, word_min_len=2)
-            sentence = TextRank4Sentence()
-            sentence.analyze('\n'.join(k[1]), lower=True)
-            s_list = sentence.get_key_sentences(num=3, sentence_min_len=5)[:30]
-            print("【主题索引】:{} \n【主题声量】：{} \n【主题关键词】： {} \n【主题中心句】 ：\n{}".format(k[0], len(k[1]),
-                                                                                                 ','.join(
-                                                                                                     [i.word for i in
-                                                                                                      w_list]),
-                                                                                                 '\n'.join(
-                                                                                                     [i.sentence for i
-                                                                                                      in s_list])))
-            print("-------------------------------------------------------------------------")
+        return self.cluster_contents
+
+
+def generate_html_report(clusters, contents, file_path, threshold):
+    """
+    生成HTML聚类报告
+    """
+    # 使用 {{ 和 }} 来转义大括号，这样 Python 不会将其视为格式化占位符
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>文本聚类结果</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                margin: 20px;
+                background-color: #f5f5f5;
+            }}
+            h1 {{
+                color: #333;
+                text-align: center;
+            }}
+            .summary {{
+                background-color: #e9f7fe;
+                padding: 15px;
+                border-radius: 5px;
+                margin-bottom: 20px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            }}
+            .cluster {{
+                background-color: white;
+                padding: 15px;
+                margin-bottom: 20px;
+                border-radius: 5px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            }}
+            .cluster-header {{
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px;
+                border-radius: 5px 5px 0 0;
+                margin: -15px -15px 15px -15px;
+            }}
+            .document {{
+                border-bottom: 1px solid #eee;
+                padding: 10px 0;
+            }}
+            .document:last-child {{
+                border-bottom: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>文本聚类结果</h1>
+        <div class="summary">
+            <p><strong>聚类阈值:</strong> {threshold}</p>
+            <p><strong>总文档数:</strong> {total_docs}</p>
+            <p><strong>总簇数:</strong> {total_clusters}</p>
+            <p><strong>最大簇大小:</strong> {max_cluster_size}</p>
+            <p><strong>最小簇大小:</strong> {min_cluster_size}</p>
+            <p><strong>平均簇大小:</strong> {avg_cluster_size:.2f}</p>
+        </div>
+    """.format(
+        threshold=threshold,
+        total_docs=len(contents),
+        total_clusters=len(clusters),
+        max_cluster_size=max([len(c) for c in clusters]) if clusters else 0,
+        min_cluster_size=min([len(c) for c in clusters]) if clusters else 0,
+        avg_cluster_size=sum([len(c) for c in clusters]) / len(clusters) if clusters else 0
+    )
+
+    # 添加每个簇的详细信息
+    for idx, cluster in enumerate(clusters):
+        html += """
+        <div class="cluster">
+            <div class="cluster-header">
+                <h2>簇 #{num} (包含 {size} 条文档)</h2>
+            </div>
+        """.format(num=idx + 1, size=len(cluster))
+
+        for doc_idx in cluster:
+            html += """
+            <div class="document">
+                <p>{content}</p>
+            </div>
+            """.format(content=contents[doc_idx])
+
+        html += "</div>"
+
+    html += """
+    </body>
+    </html>
+    """
+
+    # 生成HTML文件
+    with codecs.open(file_path, 'w', 'utf-8') as f:
+        f.write(html)
+
+    print(f"聚类报告已保存到：{file_path}")
+
+
+def generate_text_report(clusters, contents, file_path, threshold):
+    """
+    生成文本格式的聚类报告
+    """
+    with codecs.open(file_path, 'w', 'utf-8') as f:
+        f.write("文本聚类结果\n")
+        f.write("=" * 50 + "\n\n")
+
+        f.write(f"聚类阈值: {threshold}\n")
+        f.write(f"总文档数: {len(contents)}\n")
+        f.write(f"总簇数: {len(clusters)}\n")
+
+        if clusters:
+            f.write(f"最大簇大小: {max([len(c) for c in clusters])}\n")
+            f.write(f"最小簇大小: {min([len(c) for c in clusters])}\n")
+            f.write(f"平均簇大小: {sum([len(c) for c in clusters]) / len(clusters):.2f}\n\n")
+
+        # 添加每个簇的详细信息
+        for idx, cluster in enumerate(clusters):
+            f.write(f"\n簇 #{idx + 1} (包含 {len(cluster)} 条文档)\n")
+            f.write("-" * 50 + "\n")
+
+            for doc_idx in cluster:
+                f.write(f"{contents[doc_idx]}\n")
+                f.write("-" * 30 + "\n")
+
+            f.write("\n")
+
+    print(f"聚类文本报告已保存到：{file_path}")
+
+
+def cluster_texts(file_path, content_field='content', threshold=0.5, output_dir="output", max_docs=1000,
+                  use_transformer=True):
+    """
+    通用文本聚类函数，可处理CSV和JSONL文件
+    """
+    # 检查文件是否存在
+    if not os.path.exists(file_path):
+        print(f"错误：文件 '{file_path}' 不存在")
+        print(f"当前工作目录: {os.getcwd()}")
+        return None
+
+    # 创建输出目录
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        print(f"创建输出目录: {output_dir}")
+
+    # 根据文件扩展名确定处理方式
+    file_extension = os.path.splitext(file_path)[1].lower()
+
+    if file_extension == '.csv':
+        print(f"检测到CSV文件: {file_path}")
+        contents = read_csv_file(file_path, content_field, max_docs)
+    elif file_extension == '.jsonl':
+        print(f"检测到JSONL文件: {file_path}")
+        contents = read_jsonl_file(file_path, content_field, max_docs)
+    else:
+        raise ValueError(f"不支持的文件格式: {file_extension}，仅支持.csv和.jsonl文件")
+
+    if not contents:
+        print("未能成功读取文本内容，请检查文件格式和内容字段名")
+        return None
+
+    # 加载多语言停用词
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    stopwords = set()
+    stopwords_files = [
+        os.path.join(base_dir, 'stopwords', 'Arabic.txt'),
+        os.path.join(base_dir, 'stopwords', 'Indonesian.txt'),
+        os.path.join(base_dir, 'stopwords', 'Malay.txt'),
+        os.path.join(base_dir, 'stopwords', 'English.txt'),
+        os.path.join(base_dir, 'stopwords', 'Chinese.txt')
+    ]
+
+    for sw_file in stopwords_files:
+        stopwords.update(load_stopwords(sw_file))
+    print(f"加载了 {len(stopwords)} 个停用词")
+
+    if use_transformer:
+        # 使用多语言SentenceTransformer生成文本向量
+        try:
+            print("正在加载多语言模型 paraphrase-multilingual-MiniLM-L12-v2...")
+            model_path = "./bertopic_multilingual_model"
+            embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2", cache_folder=model_path)
+            print("模型加载完成，开始生成文本嵌入向量...")
+
+            # 生成文本嵌入向量
+            vectors = embedding_model.encode(contents, show_progress_bar=True)
+            print(f"成功生成 {len(vectors)} 条文本的嵌入向量")
+        except Exception as e:
+            print(f"加载SentenceTransformer模型失败: {str(e)}")
+            print("退回到使用TF-IDF向量化...")
+            use_transformer = False
+
+    if not use_transformer:
+        # 退回到TF-IDF方法
+        print("使用TF-IDF向量化文本...")
+        vectorizer = TfidfVectorizer(stop_words=list(stopwords) if stopwords else None)
+        vectors = vectorizer.fit_transform(contents)
+        print(f"成功生成TF-IDF向量矩阵，形状: {vectors.shape}")
+
+    # 聚类
+    print(f"开始使用阈值 {threshold} 进行单程聚类...")
+    model = SinglePassClustering(threshold=threshold)
+    clusters = model.fit(vectors)
+    print(f"聚类完成，共生成 {len(clusters)} 个簇")
+
+    # 打印聚类结果
+    for idx, cluster in enumerate(clusters):
+        print(f"--- 第 {idx + 1} 个簇（共{len(cluster)}条）---")
+        for doc_index in cluster[:3]:  # 只打印前三条，避免输出过多
+            print(f" - {contents[doc_index][:100]}...")  # 只打印前100个字符
+        if len(cluster) > 3:
+            print(f"   ... 等 {len(cluster) - 3} 条")
+        print()
+
+    # 获取原始文件名（不含路径和扩展名）
+    file_name = os.path.splitext(os.path.basename(file_path))[0]
+
+    # 生成HTML报告
+    html_path = os.path.join(output_dir, f"{file_name}_clusters.html")
+    generate_html_report(clusters, contents, html_path, threshold)
+
+    # 生成文本报告
+    text_path = os.path.join(output_dir, f"{file_name}_clusters.txt")
+    generate_text_report(clusters, contents, text_path, threshold)
+
+    return clusters
+
+
+def read_csv_file(file_path, content_field='content', max_docs=1000):
+    """读取CSV文件中的文本内容"""
+    try:
+        df = pd.read_csv(file_path)
+        if content_field not in df.columns:
+            raise ValueError(f"CSV文件中必须包含 '{content_field}' 列。")
+
+        # 限制处理的最大文档数
+        if len(df) > max_docs:
+            print(f"数据量超过限制，仅处理前 {max_docs} 条记录")
+            df = df.iloc[:max_docs]
+
+        contents = df[content_field].astype(str).tolist()
+        print(f"已从CSV文件中读取 {len(contents)} 条文本")
+        return contents
+    except Exception as e:
+        print(f"读取CSV文件时出错: {str(e)}")
+        return None
+
+
+def read_jsonl_file(file_path, content_field='content', max_docs=1000):
+    """读取JSONL文件中的文本内容"""
+    contents = []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if i >= max_docs:
+                    print(f"数据量超过限制，仅处理前 {max_docs} 条记录")
+                    break
+
+                try:
+                    data = json.loads(line)
+                    if content_field in data:
+                        contents.append(str(data[content_field]))
+                    else:
+                        print(f"警告: 在第 {i + 1} 行找不到字段 '{content_field}'")
+                except json.JSONDecodeError:
+                    print(f"警告: 无法解析第 {i + 1} 行的JSON数据")
+
+        print(f"已从JSONL文件中读取 {len(contents)} 条文本")
+        return contents
+    except Exception as e:
+        print(f"读取JSONL文件时出错: {str(e)}")
+        return None
+
+
+if __name__ == '__main__':
+    # 设置参数
+    THRESHOLD = 0.5  # 聚类阈值
+    MAX_DOCS = 1000  # 最大处理文档数
+    USE_TRANSFORMER = True  # 使用多语言Transformer模型
+    CONTENT_FIELD = 'content'  # 内容字段名称
+
+    # 使用绝对路径或正确的相对路径
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # 自动检测可用的输入文件
+    input_files = []
+    potential_paths = [
+        os.path.join(base_dir, '数据清洗', 'twitter.csv'),
+        os.path.join(base_dir, '数据清洗', 'twitter.jsonl'),
+        os.path.join(base_dir, 'data', 'twitter.csv'),
+        os.path.join(base_dir, 'data', 'twitter.jsonl')
+    ]
+
+    for path in potential_paths:
+        if os.path.exists(path):
+            input_files.append(path)
+
+    # 输出目录
+    output_dir = os.path.join(base_dir, 'output')
+
+    if not input_files:
+        print("错误: 未找到可处理的文件。请确保在以下路径存在CSV或JSONL文件:")
+        for path in potential_paths:
+            print(f" - {path}")
+    else:
+        for file_path in input_files:
+            print("\n" + "=" * 50)
+            print(f"开始处理文件: {file_path}")
+            print("=" * 50)
+
+            # 文件扩展名
+            ext = os.path.splitext(file_path)[1].lower()
+            print(f"文件类型: {ext}")
+            print(f"输出目录: {output_dir}")
+            print(f"使用聚类阈值: {THRESHOLD}")
+            print(f"处理数据量上限: {MAX_DOCS}条")
+            print(f"使用多语言模型: {'是' if USE_TRANSFORMER else '否'}")
+            print(f"内容字段名称: {CONTENT_FIELD}")
+            print("-" * 50)
+
+            cluster_texts(
+                file_path,
+                content_field=CONTENT_FIELD,
+                threshold=THRESHOLD,
+                output_dir=output_dir,
+                max_docs=MAX_DOCS,
+                use_transformer=USE_TRANSFORMER
+            )

@@ -4,6 +4,17 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
+
+
+# 读取停用词函数
+def load_stopwords(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return set(line.strip() for line in f)
+    except FileNotFoundError:
+        print(f"警告：未找到停用词文件 '{file_path}'")
+        return set()
 
 
 class SinglePassClustering:
@@ -49,36 +60,6 @@ class SinglePassClustering:
                 self.cluster_contents.append([idx])
 
         return self.cluster_contents
-
-
-def cluster_csv_content(file_path, threshold=0.5):
-    # 检查文件是否存在
-    if not os.path.exists(file_path):
-        print(f"错误：文件 '{file_path}' 不存在")
-        print(f"当前工作目录: {os.getcwd()}")
-        return None
-
-    df = pd.read_csv(file_path)
-
-    if 'content' not in df.columns:
-        raise ValueError("CSV文件中必须包含 'content' 列。")
-
-    contents = df['content'].astype(str).tolist()
-
-    vectorizer = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = vectorizer.fit_transform(contents)
-
-    model = SinglePassClustering(threshold=threshold)
-    clusters = model.fit(tfidf_matrix)
-
-    # 打印聚类结果
-    for idx, cluster in enumerate(clusters):
-        print(f"--- 第 {idx + 1} 个簇（共{len(cluster)}条）---")
-        for doc_index in cluster:
-            print(f" - {contents[doc_index]}")
-        print()
-
-    return clusters
 
 
 def generate_html_report(clusters, contents, file_path, threshold):
@@ -180,6 +161,8 @@ def generate_html_report(clusters, contents, file_path, threshold):
         f.write(html)
 
     print(f"聚类报告已保存到：{file_path}")
+
+
 def generate_text_report(clusters, contents, file_path, threshold):
     """
     生成文本格式的聚类报告
@@ -211,7 +194,8 @@ def generate_text_report(clusters, contents, file_path, threshold):
     print(f"聚类文本报告已保存到：{file_path}")
 
 
-def cluster_csv_content(file_path, threshold=0.5, output_dir="output"):
+def cluster_csv_content(file_path, content_field='content', threshold=0.5, output_dir="output", max_docs=1000,
+                        use_transformer=True):
     # 检查文件是否存在
     if not os.path.exists(file_path):
         print(f"错误：文件 '{file_path}' 不存在")
@@ -225,16 +209,59 @@ def cluster_csv_content(file_path, threshold=0.5, output_dir="output"):
 
     df = pd.read_csv(file_path)
 
-    if 'content' not in df.columns:
-        raise ValueError("CSV文件中必须包含 'content' 列。")
+    if content_field not in df.columns:
+        raise ValueError(f"CSV文件中必须包含 '{content_field}' 列。")
 
-    contents = df['content'].astype(str).tolist()
+    # 限制处理的最大文档数
+    if len(df) > max_docs:
+        print(f"数据量超过限制，仅处理前 {max_docs} 条记录")
+        df = df.iloc[:max_docs]
 
-    vectorizer = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = vectorizer.fit_transform(contents)
+    contents = df[content_field].astype(str).tolist()
 
+    # 加载多语言停用词
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    stopwords = set()
+    stopwords_files = [
+        os.path.join(base_dir, 'stopwords', 'Arabic.txt'),
+        os.path.join(base_dir, 'stopwords', 'Indonesian.txt'),
+        os.path.join(base_dir, 'stopwords', 'Malay.txt'),
+        os.path.join(base_dir, 'stopwords', 'English.txt'),
+        os.path.join(base_dir, 'stopwords', 'Chinese.txt')
+    ]
+
+    for sw_file in stopwords_files:
+        stopwords.update(load_stopwords(sw_file))
+    print(f"加载了 {len(stopwords)} 个停用词")
+
+    if use_transformer:
+        # 使用多语言SentenceTransformer生成文本向量
+        try:
+            print("正在加载多语言模型 paraphrase-multilingual-MiniLM-L12-v2...")
+            model_path = "./bertopic_multilingual_model"
+            embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2", cache_folder=model_path)
+            print("模型加载完成，开始生成文本嵌入向量...")
+
+            # 生成文本嵌入向量
+            vectors = embedding_model.encode(contents, show_progress_bar=True)
+            print(f"成功生成 {len(vectors)} 条文本的嵌入向量")
+        except Exception as e:
+            print(f"加载SentenceTransformer模型失败: {str(e)}")
+            print("退回到使用TF-IDF向量化...")
+            use_transformer = False
+
+    if not use_transformer:
+        # 退回到TF-IDF方法
+        print("使用TF-IDF向量化文本...")
+        vectorizer = TfidfVectorizer(stop_words=list(stopwords) if stopwords else None)
+        vectors = vectorizer.fit_transform(contents)
+        print(f"成功生成TF-IDF向量矩阵，形状: {vectors.shape}")
+
+    # 聚类
+    print(f"开始使用阈值 {threshold} 进行单程聚类...")
     model = SinglePassClustering(threshold=threshold)
-    clusters = model.fit(tfidf_matrix)
+    clusters = model.fit(vectors)
+    print(f"聚类完成，共生成 {len(clusters)} 个簇")
 
     # 打印聚类结果
     for idx, cluster in enumerate(clusters):
@@ -260,14 +287,31 @@ def cluster_csv_content(file_path, threshold=0.5, output_dir="output"):
 
 
 if __name__ == '__main__':
+    # 设置参数
+    THRESHOLD = 0.6  # 聚类阈值
+    MAX_DOCS = 100000000  # 最大处理文档数
+    USE_TRANSFORMER = True  # 使用多语言Transformer模型
+
     # 使用绝对路径或正确的相对路径
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    csv_path = os.path.join(base_dir, 'corpus', '拉非兹败选话题分析', 'oversea.csv')
+    csv_path = os.path.join(base_dir, '数据清洗', 'twitter.csv')
 
     # 输出目录
     output_dir = os.path.join(base_dir, 'output')
 
+    print("========= CSV文本聚类 =========")
     print(f"尝试读取文件: {csv_path}")
     print(f"输出目录: {output_dir}")
+    print(f"使用聚类阈值: {THRESHOLD}")
+    print(f"处理数据量上限: {MAX_DOCS}条")
+    print(f"使用多语言模型: {'是' if USE_TRANSFORMER else '否'}")
+    print("==============================")
 
-    cluster_csv_content(csv_path, threshold=0.4, output_dir=output_dir)  # 可调整阈值
+    cluster_csv_content(
+        csv_path,
+        content_field='content',
+        threshold=THRESHOLD,
+        output_dir=output_dir,
+        max_docs=MAX_DOCS,
+        use_transformer=USE_TRANSFORMER
+    )
