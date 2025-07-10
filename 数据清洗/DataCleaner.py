@@ -108,7 +108,7 @@ def clean_csv_content(input_file, output_file=None, content_column='content', re
         return None
 
 
-def clean_jsonl_content(input_file, output_file, content_field='content', remove_retweets=True):
+def clean_jsonl_content(input_file, output_file=None, content_field='content', remove_retweets=True):
     """
     清洗JSONL文件中的content字段
 
@@ -143,11 +143,17 @@ def clean_jsonl_content(input_file, output_file, content_field='content', remove
     cleaned_data = []
     empty_count = 0
     rt_count = 0
+    type2_count = 0  # 统计article_type为2的条目数
 
     # 处理内容
     content_hashes = set()  # 用于去重
 
     for item in data:
+        # 过滤article_type为2的条目
+        if 'article_type' in item and item['article_type'] == 2:
+            type2_count += 1
+            continue
+
         # 检查是否有内容字段
         if content_field not in item:
             continue
@@ -174,9 +180,14 @@ def clean_jsonl_content(input_file, output_file, content_field='content', remove
 
         content_hashes.add(content_hash)
 
-        # 更新清洗后的内容
-        item[content_field] = cleaned_content
-        cleaned_data.append(item)
+        # 只保留publish_time和content字段
+        cleaned_item = {}
+        if 'publish_time' in item:
+            cleaned_item['publish_time'] = item['publish_time']
+        cleaned_item[content_field] = cleaned_content
+
+        # 添加到清洗后的数据集
+        cleaned_data.append(cleaned_item)
 
     # 保存清洗后的数据
     try:
@@ -188,8 +199,9 @@ def clean_jsonl_content(input_file, output_file, content_field='content', remove
         return cleaned_data
 
     # 输出处理信息
-    duplicate_count = original_count - rt_count - empty_count - len(cleaned_data)
+    duplicate_count = original_count - rt_count - empty_count - type2_count - len(cleaned_data)
     print(f"清洗完成，已保存到: {output_file}")
+    print(f"已过滤article_type=2的条目 {type2_count} 条")
     if remove_retweets:
         print(f"已过滤转发 {rt_count} 条")
     print(f"已移除空内容 {empty_count} 条")
