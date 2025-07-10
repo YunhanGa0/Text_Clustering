@@ -4,7 +4,7 @@ import pandas as pd
 import hashlib
 import json
 from pathlib import Path
-
+import redis
 
 def clean_text(text):
     """
@@ -108,15 +108,20 @@ def clean_csv_content(input_file, output_file=None, content_column='content', re
         return None
 
 
-def clean_jsonl_content(input_file, output_file=None, content_field='content', remove_retweets=True):
+def clean_jsonl_content(input_file, output_file=None, content_field='content', remove_retweets=True, use_redis=True,
+                        redis_host='localhost', redis_port=6379, redis_db=0):
     """
-    清洗JSONL文件中的content字段
+    清洗JSONL文件中的content字段，使用Redis进行去重
 
     参数:
     input_file (str): 输入JSONL文件路径
     output_file (str): 输出JSONL文件路径，默认为在原文件名后加上"_cleaned"
     content_field (str): 内容字段的名称，默认为'content'
     remove_retweets (bool): 是否删除转发，默认为True
+    use_redis (bool): 是否使用Redis进行去重
+    redis_host (str): Redis服务器地址
+    redis_port (int): Redis服务器端口
+    redis_db (int): Redis数据库编号
 
     返回:
     list: 清洗后的数据列表
@@ -125,6 +130,18 @@ def clean_jsonl_content(input_file, output_file=None, content_field='content', r
     if output_file is None:
         input_path = Path(input_file)
         output_file = str(input_path.parent / f"{input_path.stem}_cleaned{input_path.suffix}")
+
+    # 初始化Redis连接（如果启用）
+    redis_client = None
+    if use_redis:
+        try:
+            redis_client = redis.Redis(host=redis_host, port=redis_port, db=redis_db)
+            redis_client.ping()  # 测试连接
+            print("Redis连接成功，将使用Redis进行去重")
+        except Exception as e:
+            print(f"Redis连接失败: {str(e)}，将使用本地去重")
+            redis_client = None
+            use_redis = False
 
     # 读取JSONL文件
     data = []
@@ -143,10 +160,11 @@ def clean_jsonl_content(input_file, output_file=None, content_field='content', r
     cleaned_data = []
     empty_count = 0
     rt_count = 0
-    type2_count = 0  # 统计article_type为2的条目数
+    type2_count = 0
+    redis_duplicate_count = 0  # Redis去重计数器
 
     # 处理内容
-    content_hashes = set()  # 用于去重
+    content_hashes = set()  # 用于本地去重
 
     for item in data:
         # 过滤article_type为2的条目
@@ -173,12 +191,20 @@ def clean_jsonl_content(input_file, output_file=None, content_field='content', r
             empty_count += 1
             continue
 
-        # 去重
+        # 生成内容哈希值
         content_hash = generate_hash(cleaned_content)
-        if content_hash in content_hashes:
-            continue
 
-        content_hashes.add(content_hash)
+        # 使用Redis进行去重
+        if use_redis:
+            is_new = redis_client.sadd('content_hashes', content_hash)
+            if not is_new:
+                redis_duplicate_count += 1
+                continue
+        else:
+            # 本地去重
+            if content_hash in content_hashes:
+                continue
+            content_hashes.add(content_hash)
 
         # 只保留publish_time和content字段
         cleaned_item = {}
@@ -205,7 +231,12 @@ def clean_jsonl_content(input_file, output_file=None, content_field='content', r
     if remove_retweets:
         print(f"已过滤转发 {rt_count} 条")
     print(f"已移除空内容 {empty_count} 条")
-    print(f"已去除重复内容 {duplicate_count} 条")
+
+    if use_redis:
+        print(f"已通过Redis去除重复内容 {redis_duplicate_count} 条")
+    else:
+        print(f"已去除重复内容 {duplicate_count} 条")
+
     print(f"最终保留数据 {len(cleaned_data)} 条")
 
     return cleaned_data
