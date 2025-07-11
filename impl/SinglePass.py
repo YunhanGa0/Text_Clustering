@@ -8,6 +8,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 import datetime
 from dateutil.parser import parse
+from tqdm import tqdm
 
 
 # 读取停用词函数
@@ -340,7 +341,7 @@ def cluster_texts(file_path, content_field='content', time_field=None, threshold
             embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2", cache_folder=model_path)
             print("模型加载完成，开始生成文本嵌入向量...")
 
-            # 生成文本嵌入向量
+            # 生成文本嵌入向量 (已有内置进度条)
             vectors = embedding_model.encode(contents, show_progress_bar=True)
             print(f"成功生成 {len(vectors)} 条文本的嵌入向量")
         except Exception as e:
@@ -349,10 +350,11 @@ def cluster_texts(file_path, content_field='content', time_field=None, threshold
             use_transformer = False
 
     if not use_transformer:
-        # 退回到TF-IDF方法
+        # 退回到TF-IDF方法 (添加进度条)
         print("使用TF-IDF向量化文本...")
+        print("正在构建TF-IDF矩阵...")
         vectorizer = TfidfVectorizer(stop_words=list(stopwords) if stopwords else None)
-        vectors = vectorizer.fit_transform(contents)
+        vectors = vectorizer.fit_transform(tqdm(contents, desc="TF-IDF向量化"))
         print(f"成功生成TF-IDF向量矩阵，形状: {vectors.shape}")
 
     # 聚类
@@ -475,8 +477,8 @@ if __name__ == '__main__':
     # 自动检测可用的输入文件
     input_files = []
     potential_paths = [
-        os.path.join(base_dir, '数据清洗', 'twitter.csv'),
-        os.path.join(base_dir, '数据清洗', 'twitter.jsonl'),
+        #os.path.join(base_dir, '数据清洗', 'twitter_cleaned.csv'),
+        os.path.join(base_dir, '数据清洗', '发文合集_cleaned.jsonl'),
         os.path.join(base_dir, 'data', 'twitter.csv'),
         os.path.join(base_dir, 'data', 'twitter.jsonl')
     ]

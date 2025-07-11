@@ -249,4 +249,3 @@ if __name__ == "__main__":
 
     # JSONL
     clean_jsonl_content('../corpus/附件/发文合集.jsonl', '发文合集_cleaned.jsonl')
-    pass
