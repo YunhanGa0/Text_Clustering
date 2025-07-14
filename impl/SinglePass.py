@@ -67,7 +67,7 @@ class SinglePassClustering:
 
 
 def format_time_range(time_range):
-    """格式化时间范围显示"""
+    # 格式化时间范围显示
     if not time_range or len(time_range) != 2:
         return "时间范围未知"
 
@@ -91,10 +91,6 @@ def format_time_range(time_range):
 
 
 def generate_html_report(clusters, contents, time_data, file_path, threshold):
-    """
-    生成HTML聚类报告，包含时间分布信息
-    """
-    # 使用 {{ 和 }} 来转义大括号，这样 Python 不会将其视为格式化占位符
     html = """
     <!DOCTYPE html>
     <html>
@@ -216,9 +212,6 @@ def generate_html_report(clusters, contents, time_data, file_path, threshold):
 
 
 def generate_text_report(clusters, contents, time_data, file_path, threshold):
-    """
-    生成文本格式的聚类报告，包含时间分布信息
-    """
     with codecs.open(file_path, 'w', 'utf-8') as f:
         f.write("文本聚类结果\n")
         f.write("=" * 50 + "\n\n")
@@ -389,14 +382,13 @@ def cluster_texts(file_path, content_field='content', time_field=None, threshold
     generate_html_report(clusters, contents, time_data, html_path, threshold)
 
     # 生成文本报告
-    text_path = os.path.join(output_dir, f"{file_name}_clusters.txt")
-    generate_text_report(clusters, contents, time_data, text_path, threshold)
+    # text_path = os.path.join(output_dir, f"{file_name}_clusters.txt")
+    # generate_text_report(clusters, contents, time_data, text_path, threshold)
 
     return clusters
 
 
 def read_csv_file(file_path, content_field='content', time_field=None, max_docs=1000):
-    """读取CSV文件中的文本内容和时间字段"""
     try:
         df = pd.read_csv(file_path)
         if content_field not in df.columns:
@@ -424,7 +416,6 @@ def read_csv_file(file_path, content_field='content', time_field=None, max_docs=
 
 
 def read_jsonl_file(file_path, content_field='content', time_field=None, max_docs=1000):
-    """读取JSONL文件中的文本内容和时间字段"""
     contents = []
     time_data = [] if time_field else None
 
@@ -477,7 +468,7 @@ if __name__ == '__main__':
     # 自动检测可用的输入文件
     input_files = []
     potential_paths = [
-        #os.path.join(base_dir, '数据清洗', 'twitter_cleaned.csv'),
+        # os.path.join(base_dir, '数据清洗', 'twitter_cleaned.csv'),
         os.path.join(base_dir, '数据清洗', '发文合集_cleaned.jsonl'),
         os.path.join(base_dir, 'data', 'twitter.csv'),
         os.path.join(base_dir, 'data', 'twitter.jsonl')

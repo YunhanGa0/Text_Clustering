@@ -23,16 +23,16 @@ stopwords.update(load_stopwords('../stopwords/Chinese.txt'))
 print(f"加载了 {len(stopwords)} 个停用词")
 
 # ====== 1. 加载 JSONL 文件，字段应包含 'text' 和 'timestamp' ======
-df = pd.read_json("../corpus/新闻数据/新闻数据.jsonl", lines=True)
-# df = pd.read_csv("../corpus/拉非兹败选话题分析/oversea.csv")
+#df = pd.read_json("../corpus/新闻数据/新闻数据.jsonl", lines=True)
+df = pd.read_csv("../数据清洗/twitter.csv")
 
 # 只处理前500条数据
-max_docs = 500
+"""max_docs = 500
 df = df.head(max_docs)
-print(f"仅处理前 {max_docs} 条数据")
+print(f"仅处理前 {max_docs} 条数据")"""
 
 docs = df["content"].astype(str).tolist()
-timestamps = pd.to_datetime(df["publish_time"])
+timestamps = pd.to_datetime(df["utime"])
 print(f"加载了 {len(docs)} 条评论数据，时间范围从 {timestamps.min()} 到 {timestamps.max()}")
 
 # ====== 2. 嵌入模型：支持多语言的小模型 ======
@@ -89,7 +89,7 @@ for word, score in topic_model.get_topic(1):
 topic_model.save("bertopic_multilingual_model")
 
 # ====== 11. 生成聚类可视化 ======
-print("\n生成聚类可视化...")
+"""print("\n生成聚类可视化...")
 
 # 获取文档嵌入
 embeddings = topic_model._extract_embeddings(docs)
@@ -182,4 +182,4 @@ fig.update_layout(
 # 显示并保存图表
 fig.show()
 fig.write_html("cluster_visualization.html")
-print("聚类可视化已保存为 cluster_visualization.html")
+print("聚类可视化已保存为 cluster_visualization.html")"""
